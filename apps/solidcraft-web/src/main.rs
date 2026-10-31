@@ -13,6 +13,8 @@ mod disk;
 #[cfg(target_arch = "wasm32")]
 mod easyprint;
 #[cfg(target_arch = "wasm32")]
+mod file_providers;
+#[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
 mod install;
@@ -790,6 +792,7 @@ mod web {
             self.load_other_tabs_prefs();
             self.tick_font(ctx);
             self.app.logic(ctx);
+            crate::file_providers::publish(&self.app.file_providers);
             self.api.poll();
             self.space_mouse.logic(&mut self.app, ctx);
             self.files_tick(ctx);
@@ -824,6 +827,7 @@ mod web {
                 });
             }
             self.app.ui(ui);
+            crate::file_providers::publish(&self.app.file_providers);
             let ctx = ui.ctx().clone();
             if self.launch.persists() {
                 self.file_panel(&ctx);
@@ -960,6 +964,9 @@ mod web {
                         solidcraft_ui_egui::gpu::install_cpu_picture_renderer();
                         let (sender, receiver) = std::sync::mpsc::channel();
                         let mut app = SolveApp::new(Session::default(), services).with_control(receiver);
+                        if let Err(error) = crate::file_providers::install(app.file_providers.clone(), cc.egui_ctx.clone()) {
+                            log::error!("file provider capability could not be installed: {error:?}");
+                        }
                         app.embedded = launch.embed;
                         // Listening before reading: settings another tab writes from now on are
                         // newer than those read here.

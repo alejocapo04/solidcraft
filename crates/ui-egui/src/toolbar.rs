@@ -645,6 +645,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 crate::ui_kit::Menu::button(ui, app.tr("ui.open_recent"), |ui| {
+                    crate::file_provider_app::recent_ui(app, ui);
                     for path in app.home.recent.clone() {
                         let missing = !crate::home::available(app, &path);
                         let label = format!("{path}{}", if missing { " (missing)" } else { "" });
@@ -777,6 +778,10 @@ pub fn design_shown(app: &SolveApp) -> bool {
 }
 
 pub fn save(app: &mut SolveApp) {
+    if app.file_providers.enabled() {
+        crate::file_provider_app::save(app, false);
+        return;
+    }
     if crate::browser::needs_capture(app, crate::browser::SAVE) {
         app.tree.capture_prompt = Some(crate::browser::SAVE.into());
         return;
@@ -792,6 +797,10 @@ pub fn save(app: &mut SolveApp) {
 }
 
 pub(crate) fn save_as(app: &mut SolveApp) {
+    if app.file_providers.enabled() {
+        crate::file_provider_app::save(app, true);
+        return;
+    }
     save_as_with_extension(app, solidcraft_engine::io::DESIGN_EXT);
 }
 

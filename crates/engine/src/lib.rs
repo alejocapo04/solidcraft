@@ -808,6 +808,18 @@ impl Session {
         }
     }
 
+    /// Record only this document's captured storage checkpoint after its host confirms a durable
+    /// write. Later edits and the current name/path are preserved; no file authority is granted.
+    pub fn mark_saved_capture(&mut self, capture: &Session) -> bool {
+        if self.uid != capture.uid {
+            return false;
+        }
+        self.forget_dirty_answer();
+        self.saved = capture.doc.clone();
+        self.saved_visibility = capture.visibility.clone();
+        true
+    }
+
     pub fn mark_saved(&mut self) {
         self.forget_dirty_answer();
         self.saved = self.doc.clone();

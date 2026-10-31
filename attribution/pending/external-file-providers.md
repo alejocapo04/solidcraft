@@ -1,0 +1,1 @@
+| `apps/solidcraft-web/src/file_providers.rs` | @alejocapo04 and PhotoCraft contributors | [PhotoCraft optional web provider bridge](https://github.com/storytold/photocraft/pull/10582) | MIT OR Apache-2.0 |

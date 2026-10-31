@@ -799,6 +799,7 @@ fn content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction
 }
 
 fn start_content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>) {
+    crate::file_provider_app::recent_ui(app, ui);
     let t = Tokens::get();
     if let Some(entry) = app.recoverable.first().cloned() {
         let title = crate::i18n::format("home.recovery_count", &[("count", &app.recoverable.len().to_string())]);

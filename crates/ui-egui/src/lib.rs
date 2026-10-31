@@ -168,6 +168,8 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+mod file_provider_app;
+pub mod file_providers;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
@@ -522,6 +524,9 @@ pub struct SolveApp {
     /// leaving the sketch makes it active again.
     pub pre_sketch_component: Option<PreSketchComponent>,
     pub services: Services,
+    /// Optional same-origin document storage; disabled until explicitly registered by the host.
+    pub file_providers: file_providers::Host,
+    pub(crate) file_provider_applying: bool,
     file_picker: Option<file_picker::Pending>,
     /// A slicer started alone and waited for before the file is sent (Send to Slicer).
     pub(crate) slicer_wait: Option<dialogs_save_mesh::SlicerWait>,
@@ -781,6 +786,8 @@ impl SolveApp {
             pre_sketch_component: None,
             services,
             file_picker: None,
+            file_providers: file_providers::Host::default(),
+            file_provider_applying: false,
             slicer_wait: None,
             easyprint: Default::default(),
             saving: None,
@@ -2710,6 +2717,7 @@ impl SolveApp {
         render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
         save_job::tick(self, false);
+        file_provider_app::tick(self);
         edit_in_place::tick(self);
         let typing = ctx.egui_wants_keyboard_input();
         if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1) || (i.key_pressed(egui::Key::BrowserBack) && !typing)) {

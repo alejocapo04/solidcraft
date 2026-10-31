@@ -156,6 +156,20 @@ pub struct Documents {
     pub(crate) link_stamps: Vec<(u64, crate::linked_source::Stamp)>,
 }
 
+/// A live design by process identity, independent of its current tab or storage path.
+pub(crate) fn session_by_uid_mut(app: &mut SolveApp, uid: u64) -> Option<&mut Session> {
+    if app.session.uid == uid {
+        return Some(&mut app.session);
+    }
+    app.docs.slots.iter_mut().flatten().map(|s| &mut s.session).find(|s| s.uid == uid)
+}
+pub(crate) fn index_by_uid(app: &SolveApp, uid: u64) -> Option<usize> {
+    if app.session.uid == uid {
+        return Some(app.docs.active);
+    }
+    app.docs.slots.iter().position(|slot| slot.as_ref().is_some_and(|s| s.session.uid == uid))
+}
+
 impl Documents {
     pub(crate) fn background_mut(&mut self) -> impl Iterator<Item = &mut DocSlot> {
         self.slots.iter_mut().filter_map(Option::as_mut)

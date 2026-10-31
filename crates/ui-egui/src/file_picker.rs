@@ -31,7 +31,7 @@ impl SolveApp {
     /// Keep the target design and editors unchanged until the picker answers.
     /// (A save being written keeps it unchanged too, see [`crate::save_job`].)
     pub fn file_picker_busy(&self) -> bool {
-        self.file_picker.is_some() || self.saving.is_some() || self.disk_prompt
+        self.file_picker.is_some() || self.saving.is_some() || self.disk_prompt || (self.file_providers.busy() && !self.file_provider_applying)
     }
 
     pub(crate) fn pick_open(&mut self, complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
@@ -580,5 +580,28 @@ mod tests {
             assert!(h.app.session.doc.canvases.is_empty());
             assert!(!placement_hint_painted(&mut h, hint));
         }
+    }
+
+    #[test]
+    fn external_provider_owns_native_capture_and_late_reply_keeps_new_edits() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.file_providers.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        app.file_providers.connect("test".into(), "Test storage".into(), "account".into()).unwrap();
+        std::sync::Arc::make_mut(&mut app.session.doc).name = "Before capture".into();
+        crate::file_provider_app::save(&mut app, false);
+        let events = app.file_providers.take_events();
+        assert_eq!(events[0].metadata["type"], "saveDialog");
+        let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
+        app.file_providers.resolve_dialog(&request, "provider", "Saved.sc").unwrap();
+        let events = app.file_providers.take_events();
+        let bytes = events[0].bytes.as_ref().unwrap();
+        let native = solidcraft_engine::io::read_design(bytes).unwrap();
+        assert_eq!(native.name, "Before capture");
+        std::sync::Arc::make_mut(&mut app.session.doc).name = "After capture".into();
+        app.file_providers.result(request, "saved".into(), "design-1".into()).unwrap();
+        crate::file_provider_app::tick(&mut app);
+        assert!(app.session.is_dirty());
+        assert_eq!(app.session.doc.name, "After capture");
+        assert!(app.session.path.is_none());
     }
 }

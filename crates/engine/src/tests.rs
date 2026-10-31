@@ -4638,3 +4638,26 @@ fn a_cut_leaves_hidden_bodies_alone() {
     let shown = setup(false);
     assert!(vol(&shown, "Below") < full - 1.0 && vol(&shown, "Above") < full - 1.0, "with nothing hidden, both are cut");
 }
+
+#[test]
+fn external_file_capture_ack_does_not_retarget_or_clear_later_edits() {
+    let mut session = Session::default();
+    session.path = Some("local-original.sc".into());
+    std::sync::Arc::make_mut(&mut session.doc).name = "Captured design".into();
+    let capture = session.scratch();
+    std::sync::Arc::make_mut(&mut session.doc).name = "Later edit".into();
+    assert!(session.mark_saved_capture(&capture));
+    assert!(session.is_dirty());
+    assert_eq!(session.doc.name, "Later edit");
+    assert_eq!(session.path.as_deref(), Some("local-original.sc"));
+    assert!(!session.mark_saved_capture(&Session::default()));
+}
+#[test]
+fn external_file_capture_ack_marks_only_its_exact_design_and_visibility() {
+    let mut session = Session::default();
+    std::sync::Arc::make_mut(&mut session.doc).name = "Saved design".into();
+    let capture = session.scratch();
+    assert!(session.is_dirty());
+    assert!(session.mark_saved_capture(&capture));
+    assert!(!session.is_dirty());
+}

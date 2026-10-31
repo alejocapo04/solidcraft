@@ -1,0 +1,12 @@
+{
+  "en": {
+    "provider.choose_destination": "Choose where to save the design",
+    "provider.device_recents": "Recent designs on this device",
+    "provider.external_links": "Make linked designs independent before saving with a file provider. External design files are not uploaded.",
+    "provider.no_recents": "No recent designs from this provider",
+    "provider.open_failed": "The file provider could not open this design.",
+    "provider.recents": "Recent designs — {provider}",
+    "provider.save_failed": "The design could not be saved with the file provider. Your changes remain unsaved.",
+    "provider.saved": "Design saved with file provider"
+  }
+}
