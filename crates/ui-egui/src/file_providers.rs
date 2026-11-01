@@ -689,5 +689,4 @@ mod tests {
         assert!(h.begin(snapshots, u64::MAX, 1, format!("Other{EXTENSION}"), vec![1], false).is_err());
         assert!(!h.pending_for(u64::MAX));
     }
-
 }
