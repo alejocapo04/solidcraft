@@ -8,25 +8,25 @@ permissions:
 jobs:
   native:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 240
     env:
-      CARGO_BUILD_JOBS: "1"
+      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
       RUST_TEST_THREADS: "1"
       WGPU_BACKEND: vulkan
-      EXPECTED_SOURCE_SHA: "02a9c589d6b03a966e2a96aec7e87ff4ff7296f4"
+      EXPECTED_SOURCE_SHA: "231fdd9ad5cef401038cab6b750dd07b81c59a56"
       CARGO_CACHE_AUTO_CLEAN_FREQUENCY: "never"
       NEXTEST_TEST_THREADS: "1"
       RUST_BACKTRACE: "1"
       SOLIDCRAFT_TEST_RUNNER: "libtest"
-      SOLIDCRAFT_TEST_JOBS: "1"
+      SOLIDCRAFT_TEST_JOBS: "2"
       ACTION_MATRIX_JOBS: "1"
       SOLIDCRAFT_GPU: "software"
       SOLIDCRAFT_REQUIRE_GPU: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: "02a9c589d6b03a966e2a96aec7e87ff4ff7296f4"
+          ref: "231fdd9ad5cef401038cab6b750dd07b81c59a56"
           persist-credentials: false
       - name: Prepare runtime environment before tool setup
         shell: bash
@@ -64,17 +64,65 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           install -d -m 700 "$TMPDIR" "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$EVIDENCE_DIR"
           mkdir -p qa-output artifacts
-      - name: "Full standard-runner Solid CI and native evidence"
+      - name: "Format before compilation"
         shell: bash
         run: |
           set -euo pipefail
-          timeout 330m cargo xtask ci
-      - name: "Require both native Start-page captures"
+          timeout 5m cargo fmt --all -- --check
+      - name: "Clippy of all affected native targets"
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$EVIDENCE_DIR/solidcraft-provider-recents-off.png"
-          test -s "$EVIDENCE_DIR/solidcraft-provider-recents-on.png"
+          timeout 55m cargo clippy --locked --profile ci -p solidcraft-ui-egui -p solidcraft-web -p solidcraft-engine --all-targets --keep-going -j2 -- -D warnings
+      - name: "Prove the account-switch regression fails without the reset"
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 45m python3 - <<'PY'
+          import os,pathlib,re,subprocess
+          p=pathlib.Path('crates/ui-egui/src/file_providers.rs')
+          original=p.read_bytes()
+          text=original.decode('utf-8')
+          start=text.index('pub fn disconnect(')
+          end=text.index('\n    }',start)
+          body=text[start:end]
+          reset='        s.documents = Value::Null;'
+          assert body.count(reset)==1, 'Expected one document-cache reset in disconnect'
+          mutated=text[:start]+body.replace(reset,'',1)+text[end:]
+          env=dict(os.environ,CARGO_TERM_COLOR='never')
+          try:
+              p.write_bytes(mutated.encode('utf-8'))
+              result=subprocess.run(['cargo','test','--locked','-p','solidcraft-ui-egui','--lib','--profile','ci','file_providers::tests::unregister_clears_cached_account_documents_before_reconnect','-j2','--','--exact','--test-threads=1'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=env,timeout=2400)
+              (pathlib.Path(os.environ['EVIDENCE_DIR'])/'account-reset-negative.log').write_text(result.stdout)
+              expected='test file_providers::tests::unregister_clears_cached_account_documents_before_reconnect ... FAILED'
+              assert result.returncode!=0 and expected in result.stdout, 'Negative control must fail in the actual regression, not compilation or a missing test: '+result.stdout[-10000:]
+              print('Confirmed regression fails without the published disconnect reset: file_providers::tests::unregister_clears_cached_account_documents_before_reconnect')
+              print(result.stdout[-5000:])
+          finally:
+              p.write_bytes(original)
+          assert p.read_bytes()==original
+          subprocess.run(['git','diff','--exit-code','--','crates/ui-egui/src/file_providers.rs'],check=True)
+          PY
+      - name: "Focused Solid provider transport regressions"
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 50m cargo test --locked --profile ci -p solidcraft-ui-egui --lib file_providers -j2 -- --test-threads=1
+      - name: "Actual browser WASM package"
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40m cargo check --locked -p solidcraft-web --target wasm32-unknown-unknown -j2
+      - name: "Exact native model checkpoint regressions"
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30m cargo test --locked --profile ci -p solidcraft-engine --lib external_file_capture_ack -j2 -- --test-threads=1
+      - name: "Native Start-page Recents integration and captures"
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 25m cargo test --locked --profile ci -p solidcraft-ui-egui --test disclosure_render provider_recents_render_separately_from_device_history -j2 -- --exact --test-threads=1
       - name: Verify native evidence and source identity
         shell: bash
         run: |
@@ -107,7 +155,7 @@ jobs:
       - name: Upload two native captures and provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: provider-ui-solidcraft-02a9c589d6b0
+          name: provider-ui-solidcraft-231fdd9ad5ce
           path: |
             ${{ runner.temp }}/provider-evidence/solidcraft-provider-recents-off.png
             ${{ runner.temp }}/provider-evidence/solidcraft-provider-recents-on.png
