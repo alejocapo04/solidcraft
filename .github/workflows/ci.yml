@@ -14,7 +14,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_TEST_THREADS: "1"
       WGPU_BACKEND: vulkan
-      EXPECTED_SOURCE_SHA: "231fdd9ad5cef401038cab6b750dd07b81c59a56"
+      EXPECTED_SOURCE_SHA: "dd42f2f6302f9b396e6a70deb3d9c0ef006db996"
       CARGO_CACHE_AUTO_CLEAN_FREQUENCY: "never"
       NEXTEST_TEST_THREADS: "1"
       RUST_BACKTRACE: "1"
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: "231fdd9ad5cef401038cab6b750dd07b81c59a56"
+          ref: "dd42f2f6302f9b396e6a70deb3d9c0ef006db996"
           persist-credentials: false
       - name: Prepare runtime environment before tool setup
         shell: bash
@@ -155,7 +155,7 @@ jobs:
       - name: Upload two native captures and provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: provider-ui-solidcraft-231fdd9ad5ce
+          name: provider-ui-solidcraft-dd42f2f6302f
           path: |
             ${{ runner.temp }}/provider-evidence/solidcraft-provider-recents-off.png
             ${{ runner.temp }}/provider-evidence/solidcraft-provider-recents-on.png
