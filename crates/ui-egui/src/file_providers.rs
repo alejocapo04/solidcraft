@@ -5,7 +5,7 @@
 use crate::file_provider_app::Captured as DocState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const MAX_BYTES: usize = 80 * 1024 * 1024;
@@ -46,6 +46,17 @@ pub(crate) enum Action {
     Save { request: String, capture: Capture, status: String, resource: String },
     Open { request: String, resource: String, name: String, bytes: Vec<u8> },
 }
+#[derive(Clone, Copy)]
+enum TerminalOwner {
+    Open,
+    Save,
+}
+#[derive(Clone)]
+struct Terminal {
+    request: String,
+    metadata: Value,
+    owner: TerminalOwner,
+}
 #[derive(Default)]
 struct State {
     provider: Option<Identity>,
@@ -58,15 +69,24 @@ struct State {
     names: HashMap<u64, String>,
     dialogs: HashMap<String, Capture>,
     pending: HashMap<String, Capture>,
+    // Keep every captured document alias owned until its terminal event can be queued.
+    finishing_saves: HashMap<String, Vec<u64>>,
     opens: HashMap<String, String>,
     queued_opens: HashSet<String>,
     actions: Vec<Action>,
     events: Vec<Event>,
+    // At most MAX_PENDING saves plus MAX_PENDING reads; never stores transfer bytes.
+    finished: VecDeque<Terminal>,
     documents: Value,
 }
 impl State {
     fn busy(&self) -> bool {
-        !self.dialogs.is_empty() || !self.pending.is_empty() || !self.opens.is_empty() || !self.actions.is_empty()
+        !self.dialogs.is_empty()
+            || !self.pending.is_empty()
+            || !self.finishing_saves.is_empty()
+            || !self.opens.is_empty()
+            || !self.actions.is_empty()
+            || !self.finished.is_empty()
     }
     fn next(&mut self, kind: &str) -> Result<String, String> {
         if self.nonce.is_empty() {
@@ -94,7 +114,23 @@ impl State {
     }
     fn pending_for(&self, doc: u64) -> bool {
         self.dialogs.values().chain(self.pending.values()).any(|c| c.snapshots.iter().any(|d| d.uid == doc))
+            || self.finishing_saves.values().any(|aliases| aliases.contains(&doc))
             || self.actions.iter().any(|a| matches!(a, Action::Save { capture, .. } if capture.snapshots.iter().any(|d| d.uid == doc)))
+    }
+    fn flush_finished(&mut self) {
+        while self.events.len() < MAX_EVENTS {
+            let Some(terminal) = self.finished.pop_front() else { break };
+            self.event(terminal.metadata, None);
+            match terminal.owner {
+                TerminalOwner::Open => {
+                    self.opens.remove(&terminal.request);
+                    self.queued_opens.remove(&terminal.request);
+                }
+                TerminalOwner::Save => {
+                    self.finishing_saves.remove(&terminal.request);
+                }
+            }
+        }
     }
 }
 #[derive(Clone, Default)]
@@ -185,9 +221,9 @@ impl Host {
             || bytes.len() > MAX_BYTES
             || s.retained_bytes().saturating_add(bytes.len()) > MAX_BYTES
             || s.pending_for(doc)
-            || s.dialogs.len() + s.pending.len() >= MAX_PENDING
+            || s.dialogs.len() + s.pending.len() + s.finishing_saves.len() >= MAX_PENDING
             || s.events.len() >= MAX_EVENTS
-            || snapshots.is_empty()
+            || !snapshots.iter().any(|snapshot| snapshot.uid == doc)
         {
             return Err("provider unavailable, a save is pending, or capture exceeds 80 MiB".into());
         }
@@ -208,6 +244,7 @@ impl Host {
         let mut capture = s.dialogs.remove(request).ok_or("unknown or completed save dialog")?;
         if destination == "cancel" {
             capture.bytes = None;
+            s.finishing_saves.insert(request.into(), capture.snapshots.iter().map(|doc| doc.uid).collect());
             s.actions.push(Action::Save { request: request.into(), capture, status: "cancel".into(), resource: String::new() });
             return Ok(());
         }
@@ -240,6 +277,7 @@ impl Host {
             return Err("provider command queue is full".into());
         }
         let capture = s.pending.remove(&request).ok_or("unknown save request")?;
+        s.finishing_saves.insert(request.clone(), capture.snapshots.iter().map(|doc| doc.uid).collect());
         s.actions.push(Action::Save { request, capture, status, resource });
         Ok(())
     }
@@ -307,7 +345,10 @@ impl Host {
         std::mem::take(&mut self.state().actions)
     }
     pub fn take_events(&self) -> Vec<Event> {
-        std::mem::take(&mut self.state().events)
+        let mut s = self.state();
+        let events = std::mem::take(&mut s.events);
+        s.flush_finished();
+        if events.is_empty() { std::mem::take(&mut s.events) } else { events }
     }
     pub fn snapshot(&self) -> Value {
         let s = self.state();
@@ -322,6 +363,11 @@ impl Host {
     }
     pub(crate) fn finish_save(&self, request: &str, capture: &Capture, status: &str, resource: &str, alive: bool) {
         let mut s = self.state();
+        if !s.finishing_saves.get(request).is_some_and(|aliases| aliases.contains(&capture.doc))
+            || s.finished.iter().any(|terminal| terminal.request == request)
+        {
+            return;
+        }
         if status == "saved" {
             if alive {
                 s.bindings.insert(capture.doc, resource.into());
@@ -331,25 +377,43 @@ impl Host {
             s.resources.insert(0, Resource { id: resource.into(), name: capture.name.clone(), updated_at: String::new() });
             s.resources.truncate(MAX_RESOURCES);
         }
-        s.event(json!({"type":match status { "saved"=>"saved", "download"=>"downloaded", "cancel"=>"saveCancelled", _=>"saveFailed" },"requestId":request,"documentId":capture.doc.to_string(),"revision":capture.revision.to_string(),"resourceId":resource,"filename":capture.name,"documentOpen":alive}), None);
+        let metadata = json!({"type":match status { "saved"=>"saved", "download"=>"downloaded", "cancel"=>"saveCancelled", _=>"saveFailed" },"requestId":request,"documentId":capture.doc.to_string(),"revision":capture.revision.to_string(),"resourceId":resource,"filename":capture.name,"documentOpen":alive});
+        s.finished.push_back(Terminal { request: request.into(), metadata, owner: TerminalOwner::Save });
+        s.flush_finished();
     }
     pub(crate) fn finish_open(&self, request: &str, resource: &str, name: &str, result: Result<u64, String>) {
         let mut s = self.state();
-        s.opens.remove(request);
-        s.queued_opens.remove(request);
-        match result {
+        if !s.opens.get(request).is_some_and(|owned| owned == resource)
+            || !s.queued_opens.contains(request)
+            || s.finished.iter().any(|terminal| terminal.request == request)
+        {
+            return;
+        }
+        let metadata = match result {
             Ok(doc) => {
                 s.bindings.insert(doc, resource.into());
                 s.names.insert(doc, name.into());
-                s.event(json!({"type":"opened","requestId":request,"resourceId":resource,"documentId":doc.to_string()}), None);
+                json!({"type":"opened","requestId":request,"resourceId":resource,"documentId":doc.to_string()})
             }
-            Err(error) => s.event(json!({"type":"openFailed","requestId":request,"resourceId":resource,"error":error}), None),
-        }
+            Err(error) => json!({"type":"openFailed","requestId":request,"resourceId":resource,"error":bounded_error(&error)}),
+        };
+        s.finished.push_back(Terminal { request: request.into(), metadata, owner: TerminalOwner::Open });
+        s.flush_finished();
     }
     pub(crate) fn recent_data(&self) -> Option<(String, Vec<Resource>)> {
         let s = self.state();
         s.provider.as_ref().filter(|_| s.enabled).map(|p| (p.label.clone(), s.resources.clone()))
     }
+}
+fn bounded_error(message: &str) -> String {
+    let mut error = String::new();
+    for ch in message.chars().filter(|ch| !ch.is_control()) {
+        if error.len().saturating_add(ch.len_utf8()) > 1024 {
+            break;
+        }
+        error.push(ch);
+    }
+    error
 }
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 160 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
@@ -485,4 +549,145 @@ mod tests {
         h.result(request, "saved".into(), "file-1".into()).unwrap();
         assert!(matches!(h.take_actions().as_slice(),[Action::Save { status,.. }] if status=="saved"));
     }
+    fn fill_transport_event_queue(h: &Host) {
+        let mut state = h.state();
+        for ordinal in state.events.len()..MAX_EVENTS {
+            state.event(json!({"type":"queued","ordinal":ordinal}), None);
+        }
+    }
+
+    fn terminal_resource(h: &Host) -> String {
+        let connection = h.snapshot()["connectionId"].as_str().unwrap().to_string();
+        let filename = format!("Remote{EXTENSION}");
+        h.set_resources(&connection, vec![Resource { id: "file-1".into(), name: filename.clone(), updated_at: String::new() }]).unwrap();
+        filename
+    }
+
+    #[test]
+    fn full_event_queue_retains_open_terminals_until_ordered_drain() {
+        let h = host();
+        let filename = terminal_resource(&h);
+        let connection = h.snapshot()["connectionId"].as_str().unwrap().to_string();
+        let success = h.request_open("file-1").unwrap();
+        h.open(success.clone(), filename.clone(), vec![1]).unwrap();
+        let failure = h.request_open("file-1").unwrap();
+        h.open(failure.clone(), filename.clone(), vec![1]).unwrap();
+        h.take_actions();
+        fill_transport_event_queue(&h);
+        h.finish_open(&success, "file-1", &filename, Ok(42));
+        h.finish_open(&failure, "file-1", &filename, Err("é\n".repeat(1000)));
+        h.finish_open(&success, "file-1", &filename, Err("duplicate".into()));
+        h.finish_open("unowned", "file-1", &filename, Ok(99));
+        assert_eq!(h.state().events.len(), MAX_EVENTS);
+        assert_eq!(h.state().finished.len(), 2);
+        assert!(h.disconnect().is_err());
+        let first = h.take_events();
+        assert_eq!(first.len(), MAX_EVENTS);
+        assert!(!first.iter().any(|event| matches!(event.metadata["type"].as_str(), Some("opened" | "openFailed"))));
+        let terminals = h.take_events();
+        assert_eq!(terminals.len(), 2);
+        assert_eq!(terminals[0].metadata["type"], "opened");
+        assert_eq!(terminals[1].metadata["type"], "openFailed");
+        assert_eq!(
+            terminals.iter().map(|event| event.metadata["requestId"].as_str().unwrap()).collect::<Vec<_>>(),
+            [success.as_str(), failure.as_str()]
+        );
+        for event in &terminals {
+            assert_eq!(event.metadata["connectionId"], connection);
+            assert_eq!(event.metadata["namespace"], "account-a");
+        }
+        let error = terminals[1].metadata["error"].as_str().unwrap();
+        assert!(error.len() <= 1024 && error.chars().all(|ch| !ch.is_control()));
+        assert_eq!(h.bound_document("file-1"), Some(42));
+        assert!(!h.busy());
+        assert!(h.take_events().is_empty());
+    }
+
+    #[test]
+    fn full_event_queue_retains_save_failure_without_duplicate_or_unowned_terminals() {
+        let h = host();
+        let (request, uid) = capture(&h, false);
+        h.resolve_dialog(&request, "provider", &format!("Failed{EXTENSION}")).unwrap();
+        h.result(request.clone(), "failed".into(), String::new()).unwrap();
+        let Action::Save { capture, .. } = h.take_actions().remove(0) else { panic!("expected save action") };
+        fill_transport_event_queue(&h);
+        h.finish_save(&request, &capture, "failed", "", true);
+        h.finish_save(&request, &capture, "failed", "", true);
+        h.finish_save("unowned", &capture, "failed", "", true);
+        assert_eq!(h.state().events.len(), MAX_EVENTS);
+        assert_eq!(h.state().finished.len(), 1);
+        assert!(h.pending_for(uid));
+        assert_eq!(h.take_events().len(), MAX_EVENTS);
+        let terminals = h.take_events();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].metadata["type"], "saveFailed");
+        assert_eq!(terminals[0].metadata["requestId"], request);
+        assert!(!h.pending_for(uid));
+        assert!(!h.busy());
+        assert!(h.take_events().is_empty());
+    }
+
+    #[test]
+    fn retained_terminals_are_bounded_by_admitted_reads_and_saves() {
+        let h = host();
+        let filename = terminal_resource(&h);
+        let connection = h.snapshot()["connectionId"].as_str().unwrap().to_string();
+        for _ in 0..MAX_PENDING {
+            let (request, _) = capture(&h, false);
+            h.resolve_dialog(&request, "provider", &format!("Failed{EXTENSION}")).unwrap();
+            h.result(request, "failed".into(), String::new()).unwrap();
+        }
+        let saves: Vec<_> = h
+            .take_actions()
+            .into_iter()
+            .map(|action| match action {
+                Action::Save { request, capture, .. } => (request, capture),
+                _ => panic!("expected save action"),
+            })
+            .collect();
+        assert!(h.state().events.len() < MAX_EVENTS);
+        let mut extra = saves[0].1.snapshots.clone();
+        extra[0].uid = u64::MAX;
+        assert!(h.begin(extra, u64::MAX, 1, format!("Extra{EXTENSION}"), vec![1], false).is_err());
+        let mut reads = Vec::new();
+        for _ in 0..MAX_PENDING {
+            let request = h.request_open("file-1").unwrap();
+            h.open(request.clone(), filename.clone(), vec![1]).unwrap();
+            reads.push(request);
+        }
+        h.take_actions();
+        fill_transport_event_queue(&h);
+        for (request, capture) in &saves {
+            h.finish_save(request, capture, "failed", "", true);
+        }
+        for request in &reads {
+            h.finish_open(request, "file-1", &filename, Err("read failed".into()));
+        }
+        assert_eq!(h.state().finished.len(), 2 * MAX_PENDING);
+        assert_eq!(h.state().finishing_saves.len(), MAX_PENDING);
+        assert_eq!(h.state().opens.len(), MAX_PENDING);
+        assert!(h.request_open("file-1").is_err());
+        assert!(h.disconnect().is_err());
+        assert_eq!(h.take_events().len(), MAX_EVENTS);
+        let terminals = h.take_events();
+        assert_eq!(terminals.len(), 2 * MAX_PENDING);
+        let expected: Vec<_> = saves.iter().map(|(request, _)| request.as_str()).chain(reads.iter().map(String::as_str)).collect();
+        assert_eq!(terminals.iter().map(|event| event.metadata["requestId"].as_str().unwrap()).collect::<Vec<_>>(), expected);
+        for event in &terminals {
+            assert_eq!(event.metadata["connectionId"], connection);
+            assert_eq!(event.metadata["namespace"], "account-a");
+        }
+        assert!(!h.busy());
+        assert!(h.take_events().is_empty());
+    }
+
+    #[test]
+    fn capture_target_must_belong_to_its_snapshot_aliases() {
+        let h = host();
+        let (request, _) = capture(&h, false);
+        let snapshots = h.state().dialogs.get(&request).unwrap().snapshots.clone();
+        assert!(h.begin(snapshots, u64::MAX, 1, format!("Other{EXTENSION}"), vec![1], false).is_err());
+        assert!(!h.pending_for(u64::MAX));
+    }
+
 }
