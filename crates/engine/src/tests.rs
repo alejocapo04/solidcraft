@@ -4641,8 +4641,7 @@ fn a_cut_leaves_hidden_bodies_alone() {
 
 #[test]
 fn external_file_capture_ack_does_not_retarget_or_clear_later_edits() {
-    let mut session = Session::default();
-    session.path = Some("local-original.sc".into());
+    let mut session = Session { path: Some("local-original.sc".into()), ..Default::default() };
     std::sync::Arc::make_mut(&mut session.doc).name = "Captured design".into();
     let capture = session.scratch();
     std::sync::Arc::make_mut(&mut session.doc).name = "Later edit".into();
