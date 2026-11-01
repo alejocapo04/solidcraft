@@ -189,7 +189,7 @@ fn provider_recents_render_separately_from_device_history() {
         for shape in &output.shapes {
             texts(&shape.shape, &mut found);
         }
-        assert!(found.iter().any(|text| text == "Device design"), "{found:?}");
+        assert!(found.iter().any(|text| text == "Device design.sc"), "{found:?}");
         assert_eq!(found.iter().any(|text| text == "Provider design.sc"), enabled, "{found:?}");
         assert_eq!(found.iter().any(|text| text == "Recent designs — External storage"), enabled, "{found:?}");
         assert_eq!(found.iter().any(|text| text == "Recent designs on this device"), enabled, "{found:?}");
