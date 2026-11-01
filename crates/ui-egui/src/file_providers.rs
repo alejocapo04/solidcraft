@@ -137,6 +137,7 @@ impl Host {
         s.bindings.clear();
         s.names.clear();
         s.events.clear();
+        s.documents = Value::Null;
         Ok(())
     }
     pub fn connected(&self) -> bool {
@@ -426,6 +427,22 @@ mod tests {
         h.state().bindings.insert(uid, "already-open".into());
         h.resolve_dialog(&request, "provider", "new.sc").unwrap();
         assert!(h.result(request, "saved".into(), "already-open".into()).is_err());
+    }
+    #[test]
+    fn unregister_clears_cached_account_documents_before_reconnect() {
+        let h = host();
+        h.state().bindings.insert(42, "account-a-resource".into());
+        h.state().names.insert(42, "Account A.sc".into());
+        h.refresh(vec![(42, 1, "Account A.sc".into(), false)]);
+        assert_eq!(h.snapshot()["documents"][0]["resourceId"], "account-a-resource");
+        h.disconnect().unwrap();
+        let disconnected = h.snapshot();
+        assert!(disconnected["documents"].is_null());
+        assert!(disconnected["resources"].as_array().unwrap().is_empty());
+        assert!(h.state().bindings.is_empty());
+        assert!(h.state().names.is_empty());
+        h.connect("test".into(), "Test storage".into(), "account-b".into()).unwrap();
+        assert!(h.snapshot()["documents"].is_null());
     }
     #[test]
     fn resource_reads_and_lists_are_scoped_to_current_account_connection() {
