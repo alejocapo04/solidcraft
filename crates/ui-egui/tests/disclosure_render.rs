@@ -137,3 +137,66 @@ fn render_browser_uses_shared_rows_in_both_lenses_and_themes() {
         }
     }
 }
+
+/// Optional storage adds a separate section to the actual Start page. This shares the existing
+/// native scenario harness and software renderer, with no new application or storage surface.
+#[test]
+fn provider_recents_render_separately_from_device_history() {
+    let directory = std::env::var_os("CRAFT_PROVIDER_UI_FIXTURES").map(std::path::PathBuf::from);
+    if let Some(path) = &directory {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let previous = theme::is_dark();
+    for enabled in [false, true] {
+        let mut h = Harness::new();
+        let local = h.dir.join("Device design.sc");
+        let bytes = h.app.session.design_container(solidcraft_engine::io::DesignCompression::Fast, true, true).unwrap();
+        std::fs::write(&local, bytes).unwrap();
+        h.app.home.recent = vec![local.to_string_lossy().into_owned()];
+        h.app.home.open = true;
+        h.call("ui.set", json!({"dark":true}));
+        if enabled {
+            let host = &h.app.file_providers;
+            host.set_session("fixture-session-0123456789abcdef".into()).unwrap();
+            let connection = host.connect("fixture".into(), "External storage".into(), "fixture-account".into()).unwrap();
+            host.set_resources(
+                &connection,
+                vec![solidcraft_ui_egui::file_providers::Resource {
+                    id: "provider-design".into(),
+                    name: "Provider design.sc".into(),
+                    updated_at: String::new(),
+                }],
+            )
+            .unwrap();
+        }
+        // A fresh context uploads all native font/image textures to the existing CPU renderer.
+        h.ctx = egui::Context::default();
+        solidcraft_ui_egui::fonts::setup_fonts(&h.ctx);
+        theme::apply(&h.ctx);
+        let mut textures = HashMap::new();
+        for _ in 0..8 {
+            raster::paint_at(&mut h, &mut textures, vec![], egui::vec2(1440.0, 1100.0));
+        }
+        let output = raster::paint_at(&mut h, &mut textures, vec![], egui::vec2(1440.0, 1100.0));
+        fn texts(shape: &egui::Shape, found: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => found.push(text.galley.text().to_string()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, found)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for shape in &output.shapes {
+            texts(&shape.shape, &mut found);
+        }
+        assert!(found.iter().any(|text| text == "Device design"), "{found:?}");
+        assert_eq!(found.iter().any(|text| text == "Provider design.sc"), enabled, "{found:?}");
+        assert_eq!(found.iter().any(|text| text == "Recent designs — External storage"), enabled, "{found:?}");
+        assert_eq!(found.iter().any(|text| text == "Recent designs on this device"), enabled, "{found:?}");
+        if let Some(path) = &directory {
+            let state = if enabled { "on" } else { "off" };
+            raster::raster(&mut h, &textures, output).save(path.join(format!("solidcraft-provider-recents-{state}.png"))).unwrap();
+        }
+    }
+    theme::set_dark(previous);
+}

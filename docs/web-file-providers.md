@@ -102,3 +102,18 @@ have been executed merely because fixtures are present.
 Contributor credit: @alejocapo04.
 
 UI messages use the English pending catalog for this feature; other locales fall back through the existing locale system. Provider Recents render inside the existing Home and file-menu containers. No camera, kernel, preferences or default behavior is changed.
+
+## Native UI evidence
+
+The existing scenario harness and native-mesh CPU renderer cover the actual Start page with the
+provider absent and connected. A small native device file supplies local history; the provider list
+uses synthetic metadata. Both states assert separate painted labels, without adding a product
+configuration, backend, or authentication service.
+
+```sh
+CRAFT_PROVIDER_UI_FIXTURES=/absolute/output SOLIDCRAFT_TEST_JOBS=1 cargo test --locked --profile ci -p solidcraft-ui-egui --test disclosure_render provider_recents_render_separately_from_device_history -- --exact --test-threads=1
+```
+
+The optional outputs are `solidcraft-provider-recents-off.png` and
+`solidcraft-provider-recents-on.png`. They are review evidence of the native UI, not geometry or
+provider-content round-trip oracles. Generated images stay outside Git.
