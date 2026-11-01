@@ -13,14 +13,6 @@ jobs:
       CARGO_BUILD_JOBS: "1"
       CARGO_INCREMENTAL: "0"
       RUST_TEST_THREADS: "1"
-      CARGO_TARGET_DIR: ${{ runner.temp }}/provider-native-target
-      TMPDIR: /tmp/acp-qa
-      XDG_RUNTIME_DIR: ${{ runner.temp }}/provider-runtime
-      XDG_CONFIG_HOME: ${{ runner.temp }}/provider-config
-      XDG_DATA_HOME: ${{ runner.temp }}/provider-data
-      XDG_CACHE_HOME: ${{ runner.temp }}/provider-cache
-      EVIDENCE_DIR: ${{ runner.temp }}/provider-evidence
-      CRAFT_PROVIDER_UI_FIXTURES: ${{ runner.temp }}/provider-evidence
       WGPU_BACKEND: vulkan
       EXPECTED_SOURCE_SHA: "978d9af4cf74166db09fb78edb36f112b2c9c534"
       CARGO_CACHE_AUTO_CLEAN_FREQUENCY: "never"
@@ -36,6 +28,26 @@ jobs:
         with:
           ref: "978d9af4cf74166db09fb78edb36f112b2c9c534"
           persist-credentials: false
+      - name: Prepare runtime environment before tool setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 /tmp/acp-qa "$RUNNER_TEMP/provider-runtime" "$RUNNER_TEMP/provider-config" "$RUNNER_TEMP/provider-data" "$RUNNER_TEMP/provider-cache" "$RUNNER_TEMP/provider-evidence" "$RUNNER_TEMP/provider-native-target"
+          {
+            echo "TMPDIR=/tmp/acp-qa"
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/provider-native-target"
+            echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/provider-runtime"
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/provider-config"
+            echo "XDG_DATA_HOME=$RUNNER_TEMP/provider-data"
+            echo "XDG_CACHE_HOME=$RUNNER_TEMP/provider-cache"
+            echo "EVIDENCE_DIR=$RUNNER_TEMP/provider-evidence"
+            echo "CRAFT_PROVIDER_UI_FIXTURES=$RUNNER_TEMP/provider-evidence"
+          } >> "$GITHUB_ENV"
+      - name: Free unused SDK space on disposable hosted runner
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
       - name: Install existing native build prerequisites
         uses: storytold/craft-common-actions/actions/install-apt-packages@44a7db40b1a3e99eed02c88f89f38cdd6cfffe81
         with:
