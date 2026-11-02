@@ -604,4 +604,158 @@ mod tests {
         assert_eq!(app.session.doc.name, "After capture");
         assert!(app.session.path.is_none());
     }
+
+    fn provider_app() -> SolveApp {
+        let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let host = &app.file_providers;
+        host.set_session("queued-provider-session-0123456789abcdef".into()).unwrap();
+        let connection = host.connect("test".into(), "Test storage".into(), "queue-account".into()).unwrap();
+        let resources = ["shared", "anchor", "opened"]
+            .into_iter()
+            .map(|id| crate::file_providers::Resource { id: id.into(), name: format!("{id}.sc"), updated_at: String::new() })
+            .collect();
+        host.set_resources(&connection, resources).unwrap();
+        app
+    }
+
+    fn provider_native_bytes(name: &str) -> Vec<u8> {
+        let mut session = solidcraft_engine::Session::default();
+        Arc::make_mut(&mut session.doc).name = name.into();
+        session.design_container(solidcraft_engine::io::DesignCompression::Fast, true, true).unwrap()
+    }
+
+    /// Consume the actual UI capture and its emitted native payload, without a storage service.
+    fn provider_save_request(app: &SolveApp) -> String {
+        let host = &app.file_providers;
+        let events = host.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].metadata["type"], "saveDialog");
+        let request = events[0].metadata["requestId"].as_str().unwrap().to_string();
+        host.resolve_dialog(&request, "provider", "Saved.sc").unwrap();
+        let events = host.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].metadata["type"], "save");
+        assert_eq!(events[0].metadata["documentId"], app.session.uid.to_string());
+        assert_eq!(events[0].metadata["revision"], app.session.revision.to_string());
+        let native = solidcraft_engine::io::read_design(events[0].bytes.as_ref().unwrap()).unwrap();
+        assert_eq!(native.name, app.session.doc.name);
+        assert_eq!(native.visibility, app.session.visibility);
+        request
+    }
+
+    #[test]
+    fn queued_provider_open_and_save_ack_keep_one_resource_owner() {
+        for open_first in [false, true] {
+            for later_edit in ["none", "design", "visibility"] {
+                let mut app = provider_app();
+                Arc::make_mut(&mut app.session.doc).name = "Captured design".into();
+                app.session.visibility.hidden_profiles = vec![7];
+                let uid = app.session.uid;
+                crate::toolbar::save(&mut app);
+                let request = provider_save_request(&app);
+                let host = app.file_providers.clone();
+                let read = host.request_open("shared").unwrap();
+                let bytes = provider_native_bytes("Previous remote design");
+                if later_edit == "design" {
+                    Arc::make_mut(&mut app.session.doc).name = "Later edit".into();
+                } else if later_edit == "visibility" {
+                    app.session.visibility.hidden_profiles = vec![8];
+                }
+                let (revision, content, visibility) = (app.session.revision, app.session.doc.clone(), app.session.visibility.clone());
+                if open_first {
+                    host.open(read.clone(), "shared.sc".into(), bytes).unwrap();
+                    host.result(request.clone(), "saved".into(), "shared".into()).unwrap();
+                } else {
+                    host.result(request.clone(), "saved".into(), "shared".into()).unwrap();
+                    host.open(read.clone(), "shared.sc".into(), bytes).unwrap();
+                }
+                crate::file_provider_app::tick(&mut app);
+                assert_eq!(host.bound_document("shared"), Some(uid));
+                assert_eq!(app.docs.count(), if open_first { 2 } else { 1 });
+                let saved = crate::documents::session_by_uid_mut(&mut app, uid).unwrap();
+                assert_eq!(saved.revision, revision);
+                assert!(Arc::ptr_eq(&saved.doc, &content));
+                assert_eq!(saved.visibility, visibility);
+                assert_eq!(saved.is_dirty(), later_edit != "none");
+                assert!(saved.path.is_none());
+                if open_first {
+                    assert_ne!(app.session.uid, uid);
+                    assert_eq!(app.session.doc.name, "Previous remote design");
+                    assert!(app.session.is_dirty(), "the overwritten remote snapshot has no valid saved checkpoint");
+                    assert!(host.bound_filename(app.session.uid).is_none());
+                } else {
+                    assert_eq!(app.session.uid, uid, "opening a resource already saved here preserves its live owner");
+                }
+                let snapshot = host.snapshot();
+                let documents = snapshot["documents"].as_array().unwrap();
+                assert_eq!(documents.iter().filter(|document| document["resourceId"] == "shared").count(), 1);
+                let events = host.take_events();
+                assert_eq!(events.iter().filter(|event| event.metadata["type"] == "saved").count(), 1);
+                assert_eq!(events.iter().filter(|event| event.metadata["type"] == "opened").count(), 1);
+                assert!(!host.busy());
+                assert!(host.result(request, "saved".into(), "shared".into()).is_err());
+                assert!(host.open(read, "shared.sc".into(), vec![1]).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn provider_save_and_close_follows_its_uid_after_queued_opens_shift_tabs() {
+        for open_first in [false, true] {
+            for later_edit in [false, true] {
+                let mut app = provider_app();
+                Arc::make_mut(&mut app.session.doc).name = "Original design".into();
+                let uid = app.session.uid;
+                let host = app.file_providers.clone();
+                let anchor = host.request_open("anchor").unwrap();
+                host.open(anchor, "anchor.sc".into(), provider_native_bytes("Anchor design")).unwrap();
+                crate::file_provider_app::tick(&mut app);
+                let anchor_uid = app.session.uid;
+                host.take_events();
+                crate::documents::switch(&mut app, 0);
+                crate::documents::move_tab(&mut app, 0, 1);
+                assert_eq!(crate::documents::index_by_uid(&app, uid), Some(1));
+                crate::documents::close(&mut app, 1, false);
+                crate::documents::answer_prompt(&mut app, crate::documents::Answer::Save);
+                let request = provider_save_request(&app);
+                if later_edit {
+                    Arc::make_mut(&mut app.session.doc).name = "Original after capture".into();
+                    app.session.visibility.hidden_profiles = vec![9];
+                }
+                let (revision, content, visibility) = (app.session.revision, app.session.doc.clone(), app.session.visibility.clone());
+                let anchor = host.request_open("anchor").unwrap();
+                let opened = host.request_open("opened").unwrap();
+                if !open_first {
+                    host.result(request.clone(), "saved".into(), "saved-target".into()).unwrap();
+                }
+                host.open(anchor, "anchor.sc".into(), provider_native_bytes("Anchor design")).unwrap();
+                host.open(opened, "opened.sc".into(), provider_native_bytes("Independent opened design")).unwrap();
+                if open_first {
+                    host.result(request, "saved".into(), "saved-target".into()).unwrap();
+                }
+                crate::file_provider_app::tick(&mut app);
+                let opened_uid = host.bound_document("opened").unwrap();
+                assert_eq!(app.session.uid, opened_uid, "the independent opened tab stays active");
+                assert_eq!(app.session.doc.name, "Independent opened design");
+                assert!(!app.session.is_dirty());
+                assert_eq!(crate::documents::index_by_uid(&app, anchor_uid), Some(0));
+                assert_eq!(crate::documents::index_by_uid(&app, opened_uid), Some(1));
+                assert_eq!(app.docs.count(), if later_edit { 3 } else { 2 });
+                if later_edit {
+                    assert_eq!(crate::documents::index_by_uid(&app, uid), Some(2), "the original index now names a different tab");
+                    let original = crate::documents::session_by_uid_mut(&mut app, uid).unwrap();
+                    assert!(original.is_dirty(), "a late ACK cannot close the newer design or visibility state");
+                    assert_eq!(original.revision, revision);
+                    assert!(Arc::ptr_eq(&original.doc, &content));
+                    assert_eq!(original.visibility, visibility);
+                    assert_eq!(host.bound_document("saved-target"), Some(uid));
+                } else {
+                    assert!(crate::documents::index_by_uid(&app, uid).is_none(), "only the original saved design closes");
+                    assert!(host.bound_document("saved-target").is_none());
+                }
+                assert!(app.docs.closing.is_none());
+                assert!(!app.quit_requested && !host.busy());
+            }
+        }
+    }
 }

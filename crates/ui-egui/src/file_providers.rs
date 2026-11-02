@@ -197,6 +197,16 @@ impl Host {
     pub fn pending_for(&self, doc: u64) -> bool {
         self.state().pending_for(doc)
     }
+    /// A durable write supersedes aliases acquired after the result was queued.
+    pub(crate) fn unbind_resource_aliases(&self, doc: u64, resource: &str) -> Vec<u64> {
+        let mut s = self.state();
+        let aliases: Vec<_> = s.bindings.iter().filter(|(id, bound)| **id != doc && bound.as_str() == resource).map(|(id, _)| *id).collect();
+        for id in &aliases {
+            s.bindings.remove(id);
+            s.names.remove(id);
+        }
+        aliases
+    }
     pub fn bound_document(&self, resource: &str) -> Option<u64> {
         self.state().bindings.iter().find(|(_, r)| r.as_str() == resource).map(|(d, _)| *d)
     }

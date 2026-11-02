@@ -143,8 +143,8 @@ pub struct Documents {
     pub quitting: Option<Vec<usize>>,
     /// The "save changes?" button the arrow keys have picked; Enter gives it.
     pub choice: Answer,
-    /// Save As is answering a Close/Quit prompt.
-    saving: bool,
+    /// The original design whose save is answering Close/Quit; tabs may move while it waits.
+    saving: Option<u64>,
     /// Close Other Tabs / Close All Tabs: the tabs still to close, in increasing order (the last
     /// is closed first, so the ones before it keep their places). One with unsaved changes asks
     /// first; Cancel stops the rest (#3055).
@@ -1184,7 +1184,7 @@ pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
     match answer {
         Answer::Save => {
             switch(app, i);
-            app.docs.saving = true;
+            app.docs.saving = Some(app.session.uid);
             crate::toolbar::save(app);
             if !app.file_picker_busy() {
                 saved_for_close(app);
@@ -1212,18 +1212,20 @@ pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
 
 /// Resume Close/Quit only after Save As has answered and the write succeeded.
 pub(crate) fn saved_for_close(app: &mut SolveApp) {
-    if !std::mem::take(&mut app.docs.saving) || app.docs.closing.is_none() {
+    let Some(uid) = app.docs.saving.take() else { return };
+    if app.docs.closing.is_none() {
         return;
     }
-    let saved = !app.session.is_dirty();
+    let saved_index = index_by_uid(app, uid).filter(|i| !dirty(app, *i));
+    let saved = saved_index.is_some();
     app.docs.closing = None;
     if app.docs.quitting.is_some() {
         if !saved {
             app.docs.quitting = None;
             crate::linked_source::update_changed(app);
         }
-    } else if saved {
-        close(app, app.docs.active, true);
+    } else if let Some(i) = saved_index {
+        close(app, i, true);
     } else {
         // Save As cancelled: the tabs not closed yet stay, the one in front reads what it missed.
         app.docs.batch = None;

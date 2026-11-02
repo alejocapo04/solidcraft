@@ -53,7 +53,9 @@ Choosing provider emits save with the immutable native bytes, filename, intent, 
 providerId, namespace, connectionId and requestId. Save includes a previously bound resourceId;
 Save As requests a distinct resource. The provider must finish its durable write before returning
 saveResult(requestId, saved, resourceId). An ACK cannot nominate a document or revision, cannot be
-replayed, and cannot bind a resource already owned by another open document. Failed/cancelled writes
+replayed, and is refused if the resource is already owned by another open document when the result arrives.
+Ownership is checked again when applying the ACK: a tab admitted by an earlier queued open loses its
+stale binding and saved checkpoint, leaving the captured save target as the sole resource owner. Failed/cancelled writes
 keep edits unsaved. Later edits remain dirty when an older capture succeeds. There is no pretend local
 path for an external resource.
 
@@ -72,6 +74,10 @@ Normal close/revert actions wait or refuse while provider work is unresolved. Th
 force-close/reload a tab; the host should provide an unsaved-work warning and must not acknowledge a
 write it cannot recover. This bridge does not add automatic saving, cross-client conflict resolution,
 offline persistence, autosave recovery or an inactivity/login implementation.
+
+A deferred Save-and-Close follows the original document's process identity, even if another provider
+open changes the active tab or inserts tabs before it. It closes only that saved document; later edits
+keep it open, and the other active tab is preserved.
 
 ## Open and Recents
 

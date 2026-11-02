@@ -51,6 +51,12 @@ pub(crate) fn tick(app: &mut SolveApp) {
             Action::Save { request, capture, status, resource } => {
                 let alive = crate::documents::index_by_uid(app, capture.doc).is_some();
                 if status == "saved" {
+                    // A queued open can acquire this resource after result() checked ownership.
+                    for alias in host.unbind_resource_aliases(capture.doc, &resource) {
+                        if let Some(session) = crate::documents::session_by_uid_mut(app, alias) {
+                            session.mark_unsaved();
+                        }
+                    }
                     for snapshot in &capture.snapshots {
                         if let Some(session) = crate::documents::session_by_uid_mut(app, snapshot.uid) {
                             session.mark_saved_capture(&snapshot.session);
